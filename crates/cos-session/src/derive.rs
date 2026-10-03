@@ -31,6 +31,11 @@ pub struct BranchNode {
     pub fork_seq: u64,
     /// 折叠摘要（未关闭为 `None`）。
     pub closed: Option<String>,
+    /// 折叠之后又续上了（续聊 / 在其下再歇支线）——「已折叠」不等于「已完结」。
+    ///
+    /// 折叠只是**当时**把结论回流主干；之后这一支再动，它就是活的，
+    /// 复用它的判据应是 `closed.is_none() || resumed`，而不是只看 `closed`。
+    pub resumed: bool,
     /// 子分支（按开岔顺序）。
     pub children: Vec<BranchNode>,
 }
@@ -146,13 +151,35 @@ pub fn branch_tree(events: &[SessionEvent]) -> BranchNode {
                 fork_seq: *parent_seq,
                 label: label.clone(),
                 closed: None,
+                last_activity: *parent_seq,
+                closed_at: None,
             }),
             SessionEventData::BranchClose { branch_id, summary } => {
                 if let Some(draft) = drafts.iter_mut().find(|d| &d.id == branch_id) {
+                    // 折叠可重复：摘要在事件流里是追加的，投影取**最新**一条
                     draft.closed = Some(summary.clone());
+                    draft.closed_at = Some(event.seq);
                 }
             }
             _ => {}
+        }
+        // 活动时间戳：事件自身归属的分支（`branch` 字段）决定它算谁的动静
+        if let Some(id) = &event.branch
+            && let Some(draft) = drafts.iter_mut().find(|d| &d.id == id)
+        {
+            draft.last_activity = draft.last_activity.max(event.seq);
+        }
+    }
+    // 后代活动也算「续上」：折叠后又在子分支里下钻，父分支不该仍显示冻结
+    for index in 0..drafts.len() {
+        let mut parent = drafts[index].parent.clone();
+        let activity = drafts[index].last_activity;
+        while let Some(id) = parent {
+            let Some(draft) = drafts.iter_mut().find(|d| d.id == id) else {
+                break;
+            };
+            draft.last_activity = draft.last_activity.max(activity);
+            parent = draft.parent.clone();
         }
     }
     BranchNode {
@@ -161,6 +188,7 @@ pub fn branch_tree(events: &[SessionEvent]) -> BranchNode {
         parent: None,
         fork_seq: 0,
         closed: None,
+        resumed: false,
         children: children_of(&drafts, None),
     }
 }
@@ -172,6 +200,73 @@ struct Draft {
     fork_seq: u64,
     label: String,
     closed: Option<String>,
+    /// 本分支（含后代）最后一次活动的事件 `seq`。
+    last_activity: u64,
+    /// 最后一次折叠的事件 `seq`（没折叠过为 `None`）。
+    closed_at: Option<u64>,
+}
+
+impl Draft {
+    /// 是否「折叠后又续上」：折叠之后还有本分支或其后代的动静。
+    ///
+    /// 判定收在一处（不落成字段），免得与 `Session::is_closed` 的守卫各写一份口径。
+    fn is_resumed(&self) -> bool {
+        self.closed_at
+            .is_some_and(|closed_at| self.last_activity > closed_at)
+    }
+}
+
+/// 某分支折叠之后是否又有活动（续聊 / 在它下面下钻）。
+///
+/// [`crate::Session`] 的重复折叠守卫用它：**已折叠** ≠ **已完结**——
+/// 折叠之后再说话，这一支就还是活的，应该允许再次折叠（摘要取最新）。
+pub(crate) fn is_resumed(events: &[SessionEvent], branch: &str) -> bool {
+    let mut drafts: Vec<Draft> = Vec::new();
+    for event in events {
+        match &event.data {
+            SessionEventData::BranchOpen {
+                branch_id,
+                parent_branch,
+                parent_seq,
+                label,
+            } => drafts.push(Draft {
+                id: branch_id.clone(),
+                parent: parent_branch.clone(),
+                fork_seq: *parent_seq,
+                label: label.clone(),
+                closed: None,
+                last_activity: *parent_seq,
+                closed_at: None,
+            }),
+            SessionEventData::BranchClose { branch_id, summary } => {
+                if let Some(draft) = drafts.iter_mut().find(|d| &d.id == branch_id) {
+                    draft.closed = Some(summary.clone());
+                    draft.closed_at = Some(event.seq);
+                }
+            }
+            _ => {}
+        }
+        if let Some(id) = &event.branch
+            && let Some(draft) = drafts.iter_mut().find(|d| &d.id == id)
+        {
+            draft.last_activity = draft.last_activity.max(event.seq);
+        }
+    }
+    for index in 0..drafts.len() {
+        let mut parent = drafts[index].parent.clone();
+        let activity = drafts[index].last_activity;
+        while let Some(id) = parent {
+            let Some(draft) = drafts.iter_mut().find(|d| d.id == id) else {
+                break;
+            };
+            draft.last_activity = draft.last_activity.max(activity);
+            parent = draft.parent.clone();
+        }
+    }
+    drafts
+        .iter()
+        .find(|d| d.id == branch)
+        .is_some_and(Draft::is_resumed)
 }
 
 fn children_of(drafts: &[Draft], parent: Option<&str>) -> Vec<BranchNode> {
@@ -184,6 +279,7 @@ fn children_of(drafts: &[Draft], parent: Option<&str>) -> Vec<BranchNode> {
             parent: d.parent.clone(),
             fork_seq: d.fork_seq,
             closed: d.closed.clone(),
+            resumed: d.is_resumed(),
             children: children_of(drafts, Some(&d.id)),
         })
         .collect()

@@ -105,7 +105,9 @@ fn close_branch_folds_back_to_parent() {
     session.open_branch("装饰器", fork).unwrap();
     trunk_turn(&session, "支线问", "支线答", 200);
 
-    let closed = session.close_branch("装饰器 = 定义期把函数换成返回值").unwrap();
+    let closed = session
+        .close_branch("装饰器 = 定义期把函数换成返回值")
+        .unwrap();
     assert_eq!(closed, "br_1");
     assert!(session.current_branch().is_none(), "游标应回到主干");
 
@@ -147,7 +149,14 @@ fn nested_branches_chain_their_ancestors() {
 
     assert_eq!(
         user_texts(&session.derive_messages()),
-        ["问一", "[答]答一", "一层的问", "[答]一层的答", "二层的问", "[答]二层的答"]
+        [
+            "问一",
+            "[答]答一",
+            "一层的问",
+            "[答]一层的答",
+            "二层的问",
+            "[答]二层的答"
+        ]
     );
 
     // 一层的视野不该有二层的内容
@@ -223,9 +232,8 @@ fn branch_log_roundtrips_through_jsonl() {
 #[test]
 fn legacy_log_without_branch_field_still_loads() {
     let path = std::env::temp_dir().join(format!("cos-legacy-{}.jsonl", std::process::id()));
-    let header = format!(
-        "{{\"version\":{SESSION_FORMAT_VERSION},\"id\":\"old\",\"createdAt\":1}}\n"
-    );
+    let header =
+        format!("{{\"version\":{SESSION_FORMAT_VERSION},\"id\":\"old\",\"createdAt\":1}}\n");
     let user = serde_json::json!({
         "seq": 1,
         "time": 10,
@@ -263,4 +271,81 @@ fn branch_stamp_sits_on_the_envelope() {
 
     let inner = serde_json::to_value(&events[2]).unwrap();
     assert_eq!(inner["branch"], "br_1");
+}
+
+/// **折叠不是终态**：折叠后再进去说话，这一支算「续上了」，可以再次折叠。
+#[test]
+fn a_folded_branch_can_be_resumed_and_folded_again() {
+    let session = Session::new("s1");
+    trunk_turn(&session, "问一", "答一", 100);
+    let fork = session.last_seq();
+    session.open_branch("装饰器", fork).unwrap();
+    trunk_turn(&session, "支线问", "支线答", 200);
+
+    session.close_branch("第一版结论").unwrap();
+    assert!(session.current_branch().is_none(), "游标回主干");
+
+    // 折叠后进树投影：没续过 → 不是 resumed，摘要 = 第一版
+    let tree = session.branch_tree();
+    assert_eq!(tree.children[0].closed.as_deref(), Some("第一版结论"));
+    assert!(!tree.children[0].resumed);
+
+    // 再进去说一轮：事件照常写入该分支
+    session.enter_branch(Some("br_1")).unwrap();
+    trunk_turn(&session, "追问闭包", "闭包是…", 300);
+
+    let tree = session.branch_tree();
+    assert!(tree.children[0].resumed, "折叠之后有新内容 → 这一支是活的");
+    assert_eq!(
+        tree.children[0].closed.as_deref(),
+        Some("第一版结论"),
+        "摘要仍停在最后一次折叠那一刻"
+    );
+
+    // 活的分支可以再折一次：摘要取最新
+    session.close_branch("第二版结论").unwrap();
+    let tree = session.branch_tree();
+    assert_eq!(tree.children[0].closed.as_deref(), Some("第二版结论"));
+    assert!(!tree.children[0].resumed, "刚折完，又静止了");
+
+    // 折完又没动就再折 → 拒（老守卫保住了）
+    session.enter_branch(Some("br_1")).unwrap();
+    let err = session.close_branch("第三次").unwrap_err();
+    assert!(matches!(err, SessionError::Invalid(_)), "实际 {err:?}");
+}
+
+/// 折叠后在它下面再开支线，父分支也算「续上了」（冻结父不该挂着活子）。
+#[test]
+fn a_folded_branch_is_resumed_when_a_child_branch_appears() {
+    let session = Session::new("s1");
+    trunk_turn(&session, "问一", "答一", 100);
+    let fork = session.last_seq();
+    session.open_branch("一层", fork).unwrap();
+    trunk_turn(&session, "一层的问", "一层的答", 200);
+    session.close_branch("一层结论").unwrap();
+
+    // 折叠一层之后，在它下面开二层。
+    // 注意游标此刻在主干（折叠把它交还了父分支）——要挂「一层 → 二层」必须显式进去，
+    // 这正是 Session::open_branch 要 parent 而不是靠游标的原因。
+    session.enter_branch(Some("br_1")).unwrap();
+    let inner_fork = session.last_seq();
+    session.open_branch("二层", inner_fork).unwrap();
+    trunk_turn(&session, "二层的问", "二层的答", 300);
+
+    let tree = session.branch_tree();
+    let outer = &tree.children[0];
+    assert!(outer.resumed, "子分支有动静 → 父分支不是冻结态");
+    assert_eq!(outer.children.len(), 1, "二层挂在一层下，不是主干下");
+    assert!(!outer.children[0].resumed, "二层自己没折叠过");
+    assert_eq!(outer.children[0].label, "二层");
+}
+
+/// 主干没有 resumed 一说（它永远不折叠）。
+#[test]
+fn trunk_is_never_resumed() {
+    let session = Session::new("s1");
+    trunk_turn(&session, "问一", "答一", 100);
+    let tree = session.branch_tree();
+    assert!(!tree.resumed);
+    assert!(tree.closed.is_none());
 }

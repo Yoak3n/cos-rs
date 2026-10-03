@@ -51,6 +51,7 @@ impl Session {
     ///
     /// 创建时间取当前——**从日志恢复请用 [`Session::from_events_at`]**，
     /// 把原 header 的创建时间带回来，否则下一次重写就把它冲掉了。
+    /// 游标回到主干（重载点不猜）：在支线里再开支线要靠显式 parent，见 [`Self::open_branch`]。
     pub fn from_events(id: impl Into<String>, events: Vec<SessionEvent>) -> Self {
         Self::from_events_at(id, events, now_ms())
     }
@@ -192,13 +193,20 @@ impl Session {
     /// 折叠**当前分支**（写摘要并关闭），游标交还父分支；返回被关闭的分支 id。
     ///
     /// 主干不能关闭（它就是会话本身）。
+    ///
+    /// **折叠不是终态**：已折叠的分支可以再进去说话（[`Self::enter_branch`] 不拦），
+    /// 也可以在其下再开支线——那种情况下它算「续上了」（[`crate::BranchNode::resumed`]），
+    /// 允许再次折叠，摘要以最新一条为准（见 [`crate::derive`]）。
+    /// 真正拦住的是「折叠之后一动没动又折一次」。
     pub fn close_branch(&self, summary: impl Into<String>) -> Result<String, SessionError> {
         let mut inner = self.inner.lock().unwrap();
         let Some(id) = inner.current_branch.clone() else {
             return Err(SessionError::Invalid("主干不能折叠".into()));
         };
-        if is_closed(&inner.events, &id) {
-            return Err(SessionError::Invalid(format!("分支已折叠: {id}")));
+        if is_closed(&inner.events, &id) && !derive::is_resumed(&inner.events, &id) {
+            return Err(SessionError::Invalid(format!(
+                "分支已折叠且其后没有新内容: {id}"
+            )));
         }
         let parent = parent_of(&inner.events, &id);
         push_event(
