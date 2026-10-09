@@ -12,7 +12,7 @@ use cos_llm::{
     UserMessage,
 };
 use cos_session::{SessionEventData, TurnEndReason};
-use cos_system_prompt::PromptSections;
+use cos_system_prompt::{PromptSection, PromptSections};
 use cos_test_support::{MockAdapter, MockReply};
 use cos_tools::{Tool, ToolOutcome, ToolRegistry, ToolRun};
 use futures::future::BoxFuture;
@@ -77,7 +77,8 @@ async fn tool_call_executes_and_results_flow_back() {
     root.provide(PromptSections::new(&root)).unwrap();
     root.get::<PromptSections>()
         .unwrap()
-        .append("persona", "你是助手。");
+        .append(PromptSection::new("persona", 10, "你是助手。"))
+        .unwrap();
 
     let calls = Arc::new(AtomicUsize::new(0));
     root.get::<ToolRegistry>()

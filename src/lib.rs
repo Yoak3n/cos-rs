@@ -49,7 +49,7 @@ use cos_session::{
     SESSION_FORMAT_VERSION, SessionEventData, SessionHeader, load_jsonl, save_jsonl,
 };
 use cos_shell::provide_local_shell;
-use cos_system_prompt::PromptSections;
+use cos_system_prompt::{PromptSection, PromptSections};
 #[cfg(feature = "plugin-opencode-provider")]
 use plugin_opencode_provider::OPENCODE_KIND;
 
@@ -122,7 +122,12 @@ pub async fn assemble(config: &RunConfig) -> Result<Assembled, AppError> {
     root.provide(BridgeRegistry::new(&root))?;
     root.get::<PromptSections>()
         .expect("刚装配")
-        .append("persona", "你是 cos 演示助手，工具结果要如实汇报。");
+        .append(PromptSection::new(
+            "persona",
+            10,
+            "你是 cos 演示助手，工具结果要如实汇报。",
+        ))
+        .map_err(|error| AppError::Other(format!("缺省 persona 段被拒：{error}")))?;
     register_defaults(&root.get::<InvariantRegistry>().expect("刚装配"));
 
     // 主 agent 驱动（可替换设计，agent_factory! 注册表）：--agent-driver <id>，缺省 "loop"；
