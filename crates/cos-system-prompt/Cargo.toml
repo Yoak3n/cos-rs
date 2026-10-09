@@ -3,9 +3,8 @@ name = "cos-system-prompt"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "prompt 段 + 工具 schema 装配（P5）"
+description = "prompt 段装配（P5）"
 
 [dependencies]
 cos-core = { path = "../cos-core", version = "0.1.0" }
-serde_json.workspace = true
 thiserror.workspace = true

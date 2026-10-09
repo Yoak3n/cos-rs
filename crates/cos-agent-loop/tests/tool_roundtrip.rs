@@ -172,13 +172,17 @@ async fn tool_call_executes_and_results_flow_back() {
     // 工具体被真实调用
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
-    // 第一步请求带工具 schema 与装配好的 system prompt
+    // 第一步请求：工具 schema 只走原生 `tools` 字段，system 只有装配好的段
+    // （回归点：曾经 render 会把工具名/描述/JSON Schema 再抄进 system，与原生字段重复）
     let request = last.lock().unwrap().clone().unwrap();
     assert_eq!(request.tools.len(), 1);
     assert_eq!(request.tools[0]["function"]["name"], "rec");
     let system = request.system.as_deref().unwrap();
     assert!(system.contains("你是助手。"));
-    assert!(system.contains("rec"));
+    assert!(
+        !system.contains("可用工具") && !system.contains("JSON Schema") && !system.contains("rec"),
+        "system 不该再抄工具清单：{system}"
+    );
 
     // turn 正常完成
     assert!(matches!(

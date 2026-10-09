@@ -1,11 +1,10 @@
-//! P5：prompt 段装配 + 工具 schema 收集（文本快照测试 + 段序控制）。
+//! P5：prompt 段装配（文本快照 + 段序控制；**不含工具清单**）。
 
 use cos_core::Context;
 use cos_system_prompt::{PromptError, PromptSection, PromptSections, validate};
-use serde_json::json;
 
 #[test]
-fn render_produces_deterministic_snapshot() {
+fn render_joins_sections_in_order() {
     let root = Context::root();
     let sections = PromptSections::new(&root);
     sections
@@ -15,41 +14,31 @@ fn render_produces_deterministic_snapshot() {
         .append(PromptSection::new("rules", 20, "先思考再回答。"))
         .unwrap();
 
-    let tools = vec![json!({
-        "type": "function",
-        "function": {
-            "name": "echo",
-            "description": "回声",
-            "parameters": {
-                "type": "object",
-                "properties": { "text": { "type": "string" } },
-                "required": ["text"]
-            }
-        }
-    })];
-
-    let rendered = sections.render(&tools);
     assert_eq!(
-        rendered,
-        "你是一个助手。\n\
-         \n\
-         先思考再回答。\n\
-         \n\
-         可用工具：\n\
-         - echo: 回声\n\
-         \x20 参数 (JSON Schema):\n\
-         {\n  \"properties\": {\n    \"text\": {\n      \"type\": \"string\"\n    }\n  },\n  \"required\": [\n    \"text\"\n  ],\n  \"type\": \"object\"\n}"
+        sections.render(),
+        "你是一个助手。\n\n先思考再回答。",
+        "渲染 = 各段文本按 order 升序、空行分隔（确定性、可快照）"
     );
 }
 
+/// 回归点：system 里**不再**出现工具清单——工具只走请求的原生 `tools` 字段。
+///
+/// 曾经 `render(&tools)` 会把「名字 + 描述 + pretty 打印的完整 JSON Schema」抄进
+/// system，与原生字段重复（每步都发，且两处描述不一致时打架）。
 #[test]
-fn render_without_tools_omits_tool_section() {
+fn render_never_lists_tools() {
     let root = Context::root();
     let sections = PromptSections::new(&root);
     sections
         .append(PromptSection::new("persona", 10, "你好。"))
         .unwrap();
-    assert_eq!(sections.render(&[]), "你好。");
+
+    let rendered = sections.render();
+    assert_eq!(rendered, "你好。");
+    assert!(
+        !rendered.contains("可用工具") && !rendered.contains("JSON Schema"),
+        "system 不该再抄工具清单：{rendered}"
+    );
 }
 
 /// 渲染顺序由 `order` 决定，与给入顺序无关。
@@ -64,7 +53,7 @@ fn order_decides_render_order_not_input_order() {
             PromptSection::new("b", 20, "乙"),
         ])
         .unwrap();
-    assert_eq!(sections.render(&[]), "甲\n\n乙\n\n丙");
+    assert_eq!(sections.render(), "甲\n\n乙\n\n丙");
     let snapshot = sections.sections();
     let names: Vec<&str> = snapshot.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, ["a", "b", "c"], "快照也按渲染顺序");
@@ -84,7 +73,7 @@ fn append_lands_in_order_without_disturbing_others() {
     sections
         .append(PromptSection::new("role", 20, "角色"))
         .unwrap();
-    assert_eq!(sections.render(&[]), "纪律\n\n角色\n\n阶段");
+    assert_eq!(sections.render(), "纪律\n\n角色\n\n阶段");
 }
 
 /// 不合法一律拒收：空名 / 空文本 / 段序冲突 / 段名重复。
