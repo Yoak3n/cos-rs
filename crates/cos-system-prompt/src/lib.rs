@@ -1,7 +1,11 @@
-//! cos-system-prompt —— prompt 段装配 + 工具 schema 收集（P5）。
+//! cos-system-prompt —— prompt 段装配（P5）。
 //!
-//! 语义参考：`packages/core/system-prompt/src/`（P5 简化：有序段列表 + 工具清单，
+//! 语义参考：`packages/core/system-prompt/src/`（P5 简化：有序段列表，
 //! 变量/条件段等高级机制留待后续阶段；渲染文本确定性、可快照）。
+//!
+//! **不写工具清单**：工具以原生 `tools` 字段随请求发出（适配器各自转换格式），
+//! 再在 system 里抄一遍既费 token，又可能与原生描述打架——所以 [`PromptSections::render`]
+//! 只拼段。
 //!
 //! **段序是显式的**：每段自带 [`PromptSection::order`]，装配按它升序存放——
 //! 顺序不靠 `append` 的调用次序（那是隐式的：往中间加一段就会挪动后面所有段）。
@@ -106,30 +110,16 @@ impl PromptSections {
         self.sections.lock().unwrap().clone()
     }
 
-    /// 渲染完整 system prompt：各段按 `order` 升序、以空行分隔，末尾附工具清单段。
+    /// 渲染完整 system prompt：各段按 `order` 升序、以空行分隔。
     ///
-    /// 确定性输出（可快照测试）；工具清单按注册表名字序。
-    pub fn render(&self, tools: &[serde_json::Value]) -> String {
-        let mut parts: Vec<String> = self
-            .sections()
+    /// 确定性输出（可快照测试）。**不含工具清单**——工具只走请求的原生 `tools`
+    /// 字段（见模块文档）。
+    pub fn render(&self) -> String {
+        self.sections()
             .into_iter()
             .map(|section| section.text)
-            .collect();
-        if !tools.is_empty() {
-            let mut lines: Vec<String> = Vec::new();
-            for schema in tools {
-                let function = &schema["function"];
-                let name = function["name"].as_str().unwrap_or("?");
-                let description = function["description"].as_str().unwrap_or("");
-                let parameters = serde_json::to_string_pretty(&function["parameters"])
-                    .unwrap_or_else(|_| "{}".into());
-                lines.push(format!(
-                    "- {name}: {description}\n  参数 (JSON Schema):\n{parameters}"
-                ));
-            }
-            parts.push(format!("可用工具：\n{}", lines.join("\n")));
-        }
-        parts.join("\n\n")
+            .collect::<Vec<_>>()
+            .join("\n\n")
     }
 }
 

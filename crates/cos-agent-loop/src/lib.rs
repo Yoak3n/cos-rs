@@ -398,7 +398,7 @@ impl AgentCore {
             .agent_ctx
             .get::<cos_system_prompt::PromptSections>()
             .ok()
-            .map(|sections| sections.render(&tools));
+            .map(|sections| sections.render());
         let messages = self.session.derive_messages();
         let request = LlmRequest {
             system,
