@@ -238,10 +238,8 @@ fn creation_time_survives_restore_and_rewrite() {
         created_at_ms: session.created_at_ms(),
         cwd: None,
     };
-    let path = std::env::temp_dir().join(format!(
-        "cos-session-created-{}.jsonl",
-        std::process::id()
-    ));
+    let path =
+        std::env::temp_dir().join(format!("cos-session-created-{}.jsonl", std::process::id()));
     save_jsonl(&session, &header, &path).unwrap();
 
     let (loaded, events) = load_jsonl(&path).unwrap();

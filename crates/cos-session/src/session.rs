@@ -119,8 +119,9 @@ impl Session {
             .events
             .iter()
             .filter_map(|event| match &event.data {
-                SessionEventData::TurnStart { turn }
-                | SessionEventData::TurnEnd { turn, .. } => Some(*turn),
+                SessionEventData::TurnStart { turn } | SessionEventData::TurnEnd { turn, .. } => {
+                    Some(*turn)
+                }
                 _ => None,
             })
             .max()
@@ -272,15 +273,17 @@ fn is_closed(events: &[SessionEvent], id: &str) -> bool {
 
 /// 分支的父分支（主干为 `None`）。
 fn parent_of(events: &[SessionEvent], id: &str) -> Option<String> {
-    events.iter().find_map(|event| match &event.data {
-        SessionEventData::BranchOpen {
-            branch_id,
-            parent_branch,
-            ..
-        } if branch_id == id => Some(parent_branch.clone()),
-        _ => None,
-    })
-    .flatten()
+    events
+        .iter()
+        .find_map(|event| match &event.data {
+            SessionEventData::BranchOpen {
+                branch_id,
+                parent_branch,
+                ..
+            } if branch_id == id => Some(parent_branch.clone()),
+            _ => None,
+        })
+        .flatten()
 }
 
 /// 当前 epoch 毫秒。

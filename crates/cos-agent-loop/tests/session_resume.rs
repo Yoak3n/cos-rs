@@ -84,11 +84,7 @@ async fn agent_resumes_from_a_persisted_session() {
         ))
         .await
         .unwrap();
-    assert_eq!(
-        resumed.session().events(),
-        events,
-        "恢复后应看到既有事件"
-    );
+    assert_eq!(resumed.session().events(), events, "恢复后应看到既有事件");
 
     resumed.followup(UserMessage::new("第二轮问"));
     resumed.when_idle().await;
@@ -156,7 +152,9 @@ async fn agent_writes_into_the_restored_branch() {
     );
     // 支线视野含主干在分叉点之前的上下文
     let view = agent.session().derive_branch_messages(Some("br_1"));
-    let has_trunk = view.iter().any(|m| matches!(m, cos_llm::Message::User(u) if u.content == "主干问"));
+    let has_trunk = view
+        .iter()
+        .any(|m| matches!(m, cos_llm::Message::User(u) if u.content == "主干问"));
     assert!(has_trunk, "支线应看得到分叉点之前的祖先上下文");
 }
 
