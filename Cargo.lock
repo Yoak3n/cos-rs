@@ -255,6 +255,7 @@ version = "0.1.0"
 dependencies = [
  "cos-core",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]

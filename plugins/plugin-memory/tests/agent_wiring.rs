@@ -13,7 +13,7 @@ use cos_core::{Context, Plugin};
 use cos_llm::{LlmRegistry, UserMessage};
 use cos_memory::MemoryStore;
 use cos_session::SessionEventData;
-use cos_system_prompt::PromptSections;
+use cos_system_prompt::{PromptSection, PromptSections};
 use cos_test_support::{MockAdapter, MockReply};
 use cos_tools::ToolRegistry;
 use plugin_memory::{MemoryConfig, MemoryPlugin};
@@ -33,7 +33,12 @@ async fn turn_absorbed_then_recalled_and_injected() {
     ctx.provide(PromptSections::new(&ctx)).unwrap();
     ctx.get::<PromptSections>()
         .unwrap()
-        .append("persona", "你是陪伴助手，请结合记忆回答。");
+        .append(PromptSection::new(
+            "persona",
+            10,
+            "你是陪伴助手，请结合记忆回答。",
+        ))
+        .unwrap();
     ctx.provide(AgentRegistry::new(&ctx)).unwrap();
     ctx.get::<AgentRegistry>()
         .unwrap()

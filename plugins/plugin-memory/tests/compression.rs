@@ -10,7 +10,7 @@ use cos_core::{Context, Plugin};
 use cos_llm::{LlmAdapter, LlmError, LlmRegistry, LlmRequest, LlmStream, UserMessage};
 use cos_memory::MemoryStore;
 use cos_session::SessionEventData;
-use cos_system_prompt::PromptSections;
+use cos_system_prompt::{PromptSection, PromptSections};
 use cos_test_support::{MockAdapter, MockReply};
 use cos_tools::ToolRegistry;
 use plugin_memory::{MemoryConfig, MemoryPlugin};
@@ -104,7 +104,8 @@ async fn long_session_compresses_tail_and_runs_digest() {
     ctx.provide(PromptSections::new(&ctx)).unwrap();
     ctx.get::<PromptSections>()
         .unwrap()
-        .append("persona", "你是陪伴助手。");
+        .append(PromptSection::new("persona", 10, "你是陪伴助手。"))
+        .unwrap();
     ctx.provide(AgentRegistry::new(&ctx)).unwrap();
     ctx.get::<AgentRegistry>()
         .unwrap()
