@@ -52,6 +52,9 @@ pub fn build_openai(config: &serde_json::Value) -> Result<Arc<dyn LlmAdapter>, L
         /// 可输入内容标注（缺省 text；视觉模型声明 image）。
         #[serde(default)]
         input_content: Vec<InputContent>,
+        /// 额外请求头（键值映射；按键名排序后发送，保证确定性）。
+        #[serde(default)]
+        extra_headers: std::collections::HashMap<String, String>,
     }
     fn default_streaming() -> bool {
         // opencode zen/go 网关流式不稳定（500 / 只出推理文本），默认非流式最稳
@@ -72,6 +75,8 @@ pub fn build_openai(config: &serde_json::Value) -> Result<Arc<dyn LlmAdapter>, L
     } else {
         config.input_content
     };
+    let mut extra_headers: Vec<(String, String)> = config.extra_headers.into_iter().collect();
+    extra_headers.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(Arc::new(OpenAiAdapter::new(OpenAiConfig {
         base_url: config.base_url,
         api_key: config.api_key,
@@ -79,6 +84,7 @@ pub fn build_openai(config: &serde_json::Value) -> Result<Arc<dyn LlmAdapter>, L
         streaming: config.streaming,
         max_tokens: config.max_tokens,
         input_content,
+        extra_headers,
     })))
 }
 
@@ -99,6 +105,10 @@ pub struct OpenAiConfig {
     pub max_tokens: Option<u32>,
     /// 可输入内容标注（`input_content()` 依据；视觉模型含 [`InputContent::Image`]）。
     pub input_content: Vec<InputContent>,
+    /// 额外请求头（键值对，按序追加在鉴权头之后）。
+    /// 网关要求会话标识（如 opencode go 的 `x-opencode-session`）或自报 UA 时用；
+    /// 发往不认识这些头的端点无害（会被忽略）。
+    pub extra_headers: Vec<(String, String)>,
 }
 
 /// OpenAI 兼容适配器（流式优先、非流式自动兜底）。
@@ -310,9 +320,11 @@ impl OpenAiAdapter {
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')
         );
-        self.client
-            .post(&url)
-            .bearer_auth(&self.config.api_key)
+        let mut builder = self.client.post(&url).bearer_auth(&self.config.api_key);
+        for (name, value) in &self.config.extra_headers {
+            builder = builder.header(name, value);
+        }
+        builder
             .json(&self.body(request, streaming))
             .build()
             .map_err(|error| {
@@ -695,4 +707,37 @@ async fn single_shot(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{LlmRequest, UserMessage};
+
+    /// extra_headers 必须逐条落到请求上（opencode go 的会话头依赖这条）。
+    #[test]
+    fn extra_headers_land_on_request() {
+        let adapter = OpenAiAdapter::new(OpenAiConfig {
+            base_url: "https://gateway.test/v1".into(),
+            api_key: "k".into(),
+            model: "m".into(),
+            streaming: false,
+            max_tokens: Some(16),
+            input_content: vec![InputContent::Text],
+            extra_headers: vec![
+                ("x-opencode-session".to_string(), "sess-1".to_string()),
+                ("User-Agent".to_string(), "test-agent/1.0".to_string()),
+            ],
+        });
+        let request = LlmRequest {
+            system: None,
+            messages: vec![Message::User(UserMessage::new("hi"))],
+            tools: Vec::new(),
+        };
+        let built = adapter.build_request(&request, false).unwrap();
+        let headers = built.headers();
+        assert_eq!(headers.get("x-opencode-session").unwrap(), "sess-1");
+        assert_eq!(headers.get("user-agent").unwrap(), "test-agent/1.0");
+        assert!(headers.get("authorization").is_some(), "鉴权头仍在");
+    }
 }

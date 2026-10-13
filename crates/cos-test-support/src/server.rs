@@ -183,6 +183,7 @@ mod tests {
             streaming: false,
             max_tokens: Some(2048),
             input_content: vec![InputContent::Text],
+            extra_headers: Vec::new(),
         })
     }
 
