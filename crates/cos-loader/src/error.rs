@@ -11,7 +11,7 @@ pub enum LoadError {
     Io(#[from] std::io::Error),
     /// 解析 cordis.yml 失败。
     #[error("解析 cordis.yml 失败: {0}")]
-    Yaml(#[from] serde_yaml::Error),
+    Yaml(#[from] serde_saphyr::Error),
     /// 插件工厂未注册（静态注册表里没有这个名字）。
     #[error("插件 '{name}' 未注册（可用: {available:?}）")]
     UnknownPlugin {

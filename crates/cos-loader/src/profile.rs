@@ -80,36 +80,34 @@ impl<'de> Deserialize<'de> for Profile {
         D: serde::Deserializer<'de>,
     {
         use serde::de::Error as _;
-        let value = serde_yaml::Value::deserialize(deserializer)?;
+        // 中间值走 serde_json::Value（本 crate 已有依赖；条目 `config` 本来就是
+        // 「YAML 原位解析为 JSON」的口径）。顶层要么是数组（v1 纯条目），要么是
+        // 对象 `{ patch, entries }`；对象里的未知字段 fail loud。
+        let value = serde_json::Value::deserialize(deserializer)?;
         match value {
-            serde_yaml::Value::Sequence(entries) => Ok(Profile {
+            serde_json::Value::Array(entries) => Ok(Profile {
                 entries: entries
                     .into_iter()
-                    .map(serde_yaml::from_value)
+                    .map(serde_json::from_value)
                     .collect::<Result<_, _>>()
                     .map_err(D::Error::custom)?,
                 patch_files: Vec::new(),
             }),
-            serde_yaml::Value::Mapping(mapping) => {
+            serde_json::Value::Object(mapping) => {
                 let mut entries = Vec::new();
                 let mut patch_files = Vec::new();
                 for (key, value) in mapping {
                     match key.as_str() {
-                        Some("entries") => {
-                            entries = serde_yaml::from_value(value).map_err(D::Error::custom)?
+                        "entries" => {
+                            entries = serde_json::from_value(value).map_err(D::Error::custom)?
                         }
-                        Some("patch") => {
-                            patch_files = serde_yaml::from_value(value).map_err(D::Error::custom)?
+                        "patch" => {
+                            patch_files = serde_json::from_value(value).map_err(D::Error::custom)?
                         }
-                        Some(other) => {
+                        other => {
                             return Err(D::Error::custom(format!(
                                 "cordis.yml 未知顶层字段: {other:?}（支持 entries / patch）"
                             )));
-                        }
-                        None => {
-                            return Err(D::Error::custom(
-                                "cordis.yml 顶层键必须是字符串（支持 entries / patch）",
-                            ));
                         }
                     }
                 }
@@ -128,7 +126,7 @@ impl<'de> Deserialize<'de> for Profile {
 impl Profile {
     /// 解析 YAML 文本（主 cordis.yml；条目来源标注为 `cordis.yml`）。
     pub fn parse(yaml: &str) -> Result<Self, LoadError> {
-        let mut profile: Profile = serde_yaml::from_str(yaml)?;
+        let mut profile: Profile = serde_saphyr::from_str(yaml)?;
         for entry in &mut profile.entries {
             entry.source = "cordis.yml".into();
         }
@@ -137,14 +135,14 @@ impl Profile {
 
     /// 解析 patch 文件 YAML 文本（顶层数组；不是数组 → fail loud）。
     pub fn parse_patch(yaml: &str, source: &str) -> Result<Vec<Patch>, LoadError> {
-        let value: serde_yaml::Value = serde_yaml::from_str(yaml)
+        let value: serde_json::Value = serde_saphyr::from_str(yaml)
             .map_err(|error| LoadError::PatchInvalid(format!("'{source}' 解析失败: {error}")))?;
-        let entries = value.as_sequence().ok_or_else(|| {
+        let entries = value.as_array().ok_or_else(|| {
             LoadError::PatchInvalid(format!("'{source}' 必须是顶层数组（patch 条目列表）"))
         })?;
         entries
             .iter()
-            .map(|entry| serde_yaml::from_value(entry.clone()))
+            .map(|entry| serde_json::from_value(entry.clone()))
             .map(|result| {
                 result.map_err(|error| {
                     LoadError::PatchInvalid(format!("'{source}' 条目解析失败: {error}"))
@@ -272,7 +270,7 @@ mod tests {
     }
 
     fn patch(yaml: &str) -> Patch {
-        serde_yaml::from_str(yaml).unwrap()
+        serde_saphyr::from_str(yaml).unwrap()
     }
 
     /// 主 yml 双形态：数组（v1 兼容）与对象 `{ patch, entries }`。

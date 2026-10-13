@@ -79,7 +79,10 @@ license = "MIT"
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+# cordis.yml 解析（cos-loader）：纯 Rust、零 unsafe 的 YAML 实现。
+# 换掉 serde_yaml（已 deprecated，其 libyaml 翻译层 unsafe-libyaml 上游归档无人维护，
+# RustSec RUSTSEC-2024-0449）；只需要反序列化，serialize/comments 特性不开。
+serde-saphyr = { version = "2", default-features = false, features = ["deserialize"] }
 futures = "0.3"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "signal", "io-std", "io-util"] }
