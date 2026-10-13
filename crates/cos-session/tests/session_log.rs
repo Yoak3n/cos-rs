@@ -1,11 +1,14 @@
-//! P3 验收：seq 单调、derive_messages 投影正确性、JSONL 持久化 → 重载逐字节一致。
+//! P3 验收：seq 单调、derive_messages 投影正确性、JSONL 持久化。
+//!
+//! 持久化走压缩口径（`condense_events`）：被 message 盖住的 chunk 不落盘，
+//! 文件往返（load → save）逐字节一致；打断轮的部分 chunk 保留。
 
 use cos_llm::{
     AssistantMessage, ChunkDelta, ContentBlock, Message, TokenUsage, ToolResultMessage, UserMessage,
 };
 use cos_session::{
     SESSION_FORMAT_VERSION, Session, SessionError, SessionEventData, SessionHeader, TurnEndReason,
-    load_jsonl, save_jsonl,
+    condense_events, load_jsonl, save_jsonl,
 };
 use serde_json::json;
 
@@ -145,7 +148,7 @@ fn event_wire_shape_has_type_and_data_envelope() {
 
 #[test]
 fn jsonl_roundtrip_is_byte_exact() {
-    let session = sample_log();
+    let session = sample_log(); // 含 2 条被 message 盖住的 chunk
     let header = SessionHeader {
         version: SESSION_FORMAT_VERSION,
         id: session.id().to_string(),
@@ -161,20 +164,94 @@ fn jsonl_roundtrip_is_byte_exact() {
 
     let (loaded_header, events) = load_jsonl(&path).unwrap();
     assert_eq!(loaded_header, header);
-    assert_eq!(events, session.events().to_vec());
+    // 文件 = 内存日志的压缩投影：被 message 盖住的 chunk 不在
+    assert_eq!(events, condense_events(&session.events()));
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e.data, SessionEventData::AssistantChunk { .. })),
+        "被 message 盖住的 chunk 不应落盘"
+    );
 
     // 恢复后投影一致
     let restored = Session::from_events(header.id.clone(), events.clone());
     assert_eq!(restored.derive_messages(), session.derive_messages());
 
-    // 再存：逐字节一致
+    // 再存：逐字节一致（压缩对已压缩的事件集是不动点）
     save_jsonl(&restored, &loaded_header, &path).unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), original);
 
-    // 恢复后续写：seq 连续
+    // 恢复后续写：seq 从原日志最大值续接（压缩留下的 seq 空洞无碍）
     let resumed = Session::from_events(header.id, events);
     resumed.append_at(SessionEventData::TurnStart { turn: 2 }, 200);
     assert_eq!(resumed.events().last().unwrap().seq, 10);
+}
+
+/// 落盘压缩口径：同 (turn, step) 的 message 落账后，chunk 行是纯重复，不落。
+#[test]
+fn chunks_covered_by_message_are_not_persisted() {
+    let session = sample_log(); // chunk ×2（seq 3,4）→ message（seq 5），同 (1,1)
+    let header = SessionHeader {
+        version: SESSION_FORMAT_VERSION,
+        id: session.id().to_string(),
+        created_at_ms: 42,
+        cwd: None,
+    };
+    let path =
+        std::env::temp_dir().join(format!("cos-session-condense-{}.jsonl", std::process::id()));
+    save_jsonl(&session, &header, &path).unwrap();
+
+    let (_, events) = load_jsonl(&path).unwrap();
+    assert_eq!(events.len(), 7, "9 条内存事件 − 2 条被盖住的 chunk");
+    assert_eq!(events[0].seq, 1);
+    assert_eq!(events[1].seq, 2, "chunk 前的 user/message 还在");
+    assert_eq!(events[2].seq, 5, "message 本体还在，seq 空洞保留");
+    // 文件体积只减不增，正文仍在 message 里
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("你好"));
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 打断轮不压：流被打断时 message 不入账，chunk 是部分产出的唯一记录。
+#[test]
+fn interrupted_stream_keeps_partial_chunks() {
+    let session = Session::new("sess-abort");
+    session.append_at(SessionEventData::TurnStart { turn: 1 }, 100);
+    session.append_at(
+        SessionEventData::AssistantChunk {
+            turn: 1,
+            step: 1,
+            chunk: cos_llm::StreamChunk::text("写了一半"),
+        },
+        101,
+    );
+    // 流在此被打断：没有 AssistantMessage，直接 TurnEnd(Aborted)
+    session.append_at(
+        SessionEventData::TurnEnd {
+            turn: 1,
+            reason: TurnEndReason::Aborted {
+                cause: cos_session::AbortCause::User,
+            },
+        },
+        102,
+    );
+
+    let header = SessionHeader {
+        version: SESSION_FORMAT_VERSION,
+        id: session.id().to_string(),
+        created_at_ms: 42,
+        cwd: None,
+    };
+    let path = std::env::temp_dir().join(format!("cos-session-abort-{}.jsonl", std::process::id()));
+    save_jsonl(&session, &header, &path).unwrap();
+
+    let (_, events) = load_jsonl(&path).unwrap();
+    let kept = events
+        .iter()
+        .filter(|e| matches!(e.data, SessionEventData::AssistantChunk { .. }))
+        .count();
+    assert_eq!(kept, 1, "无 message 盖住的 chunk 必须保留");
+    let _ = std::fs::remove_file(&path);
 }
 
 #[test]

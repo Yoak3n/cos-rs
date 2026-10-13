@@ -46,7 +46,8 @@ pub use cos_tools as tools;
 
 use cos_invariants::{InvariantRegistry, register_defaults};
 use cos_session::{
-    SESSION_FORMAT_VERSION, SessionEventData, SessionHeader, load_jsonl, save_jsonl,
+    SESSION_FORMAT_VERSION, SessionEventData, SessionHeader, condense_events, load_jsonl,
+    save_jsonl,
 };
 use cos_shell::provide_local_shell;
 use cos_system_prompt::{PromptSection, PromptSections};
@@ -406,7 +407,8 @@ pub async fn finish_with(
         }
     }
 
-    // 持久化 + 重放校验（逐事件一致）
+    // 持久化 + 重放校验（同口径逐事件一致：文件落盘即压缩，内存侧也按
+    // 压缩口径比——否则被 message 盖住的 chunk 会被误判成「重放不一致」）
     if let Some(path) = &config.session_path {
         // 创建时间取会话自带的：这是覆盖式重写，凭空造 0 会把日志头冲掉
         let header = SessionHeader {
@@ -417,7 +419,9 @@ pub async fn finish_with(
         };
         save_jsonl(agent.session(), &header, path)?;
         let (loaded_header, loaded_events) = load_jsonl(path)?;
-        if loaded_header.id != config.session_id || loaded_events != agent.session().events() {
+        if loaded_header.id != config.session_id
+            || loaded_events != condense_events(&agent.session().events())
+        {
             return Err(AppError::Other("会话重放不一致".into()));
         }
     }

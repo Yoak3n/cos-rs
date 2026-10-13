@@ -109,9 +109,14 @@ async fn demo_end_to_end_snapshot_invariants_replay_unload() {
     );
     assert!(report.services_after_unload, "todo 服务应已随卸载反注册");
 
-    // 5. JSONL 落盘（重放一致性已由 run 内部校验；行数 = header + 16 事件）
+    // 5. JSONL 落盘（重放一致性已由 run 内部校验；落盘走压缩口径：
+    //    2 条被 message 盖住的 chunk 不落 → header + 14 事件）
     let text = std::fs::read_to_string(&session_path).unwrap();
-    assert_eq!(text.lines().count(), 17);
+    assert_eq!(text.lines().count(), 15);
+    assert!(
+        !text.contains("assistant/chunk"),
+        "被 message 盖住的 chunk 不应落盘"
+    );
     // header 的创建时间是真的（回归点：收尾落盘曾把它写死 0）
     let (header, _) = cos_session::load_jsonl(&session_path).unwrap();
     assert!(header.created_at_ms > 0, "收尾落盘不该把创建时间冲成 0");
