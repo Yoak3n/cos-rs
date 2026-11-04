@@ -616,6 +616,67 @@ async fn finish_chunk_marks_tool_calls_reason() {
     );
 }
 
+/// 截断：流式 `finish_reason: length` → Finish{Length}（正文可能不完整，不能当 stop）。
+#[tokio::test]
+async fn finish_chunk_marks_length_reason() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve(
+        listener,
+        vec![
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
+             data: {\"choices\":[{\"delta\":{\"content\":\"半截\"}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n\
+             data: [DONE]\n\n",
+        ],
+    ));
+
+    let adapter = adapter(port);
+    let mut stream = adapter.stream(&request());
+    let mut last = None;
+    while let Some(item) = stream.next().await {
+        last = Some(item.unwrap().delta);
+    }
+    server.await.unwrap();
+    assert_eq!(
+        last,
+        Some(ChunkDelta::Finish {
+            reason: FinishReason::Length
+        }),
+        "被截断的回复 → finish: length"
+    );
+}
+
+/// 截断：非流式 `finish_reason: length` 同样映射到 Finish{Length}。
+#[tokio::test]
+async fn single_shot_marks_length_reason() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve(
+        listener,
+        vec![
+            "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n\
+             {\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"半截\"},\
+             \"finish_reason\":\"length\"}]}",
+        ],
+    ));
+
+    let adapter = single_adapter(port);
+    let mut stream = adapter.stream(&request());
+    let mut last = None;
+    while let Some(item) = stream.next().await {
+        last = Some(item.unwrap().delta);
+    }
+    server.await.unwrap();
+    assert_eq!(
+        last,
+        Some(ChunkDelta::Finish {
+            reason: FinishReason::Length
+        }),
+        "非流式截断 → finish: length"
+    );
+}
+
 /// 稳定错误码：4xx 鉴权 → Auth 码 + status 事实；5xx → Server 码。
 #[tokio::test]
 async fn errors_carry_stable_codes_and_status_facts() {

@@ -132,6 +132,9 @@ struct SseChunk {
 struct SseChoice {
     #[serde(default)]
     delta: SseDelta,
+    /// OpenAI 的结束原因（`stop` / `tool_calls` / `length`）；流尾块才带。
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 /// SSE delta。
@@ -180,6 +183,9 @@ struct Completion {
 #[derive(Deserialize)]
 struct CompletionChoice {
     message: CompletionMessage,
+    /// 非流式的结束原因（同 [`SseChoice::finish_reason`]）。
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 /// 非流式 message（content 为 null 时兜底 reasoning_content；工具调用独立解析）。
@@ -441,6 +447,8 @@ async fn stream_once(
     let mut tool_acc: Vec<Option<(String, String, String)>> = Vec::new();
     // 最后见到的 usage（流尾工具块携带）
     let mut usage_tail: Option<TokenUsage> = None;
+    // 提供方给的结束原因（流尾块才带）；`length` = 输出被 max_tokens 截断
+    let mut provider_finish: Option<String> = None;
     while !finished {
         if let Some(pos) = buffer.find('\n') {
             // 逐行消费 SSE；error 体可能不带 `data:` 前缀（裸 JSON）
@@ -472,6 +480,9 @@ async fn stream_once(
             let mut text = String::new();
             let mut reasoning = String::new();
             for choice in &chunk.choices {
+                if let Some(reason) = &choice.finish_reason {
+                    provider_finish = Some(reason.clone());
+                }
                 if let Some(content) = &choice.delta.content {
                     text.push_str(content);
                 }
@@ -586,18 +597,30 @@ async fn stream_once(
             },
         }));
     }
-    // 终结分片：显式结束原因（有工具块 → ToolCalls，否则 Stop；对齐 dsh finish chunk）
+    // 终结分片：显式结束原因（`length` 优先——截断必须让消费方看见；
+    // 其余按有无工具块兜底：有工具 → ToolCalls，否则 Stop）
     let _ = tx.send(Ok(StreamChunk {
         delta: ChunkDelta::Finish {
-            reason: if tools.is_empty() {
-                FinishReason::Stop
-            } else {
-                FinishReason::ToolCalls
-            },
+            reason: finish_reason_from(provider_finish.as_deref(), &tools),
         },
         usage: None,
     }));
     Ok(())
+}
+
+/// 提供方 `finish_reason` → 显式结束原因。
+///
+/// 只特判 `length`（截断）；工具块的存在仍是最可靠的 ToolCalls 判据
+/// （部分网关在有工具调用时也回 `stop`）。
+fn finish_reason_from(reason: Option<&str>, tools: &[ToolCall]) -> FinishReason {
+    if reason == Some("length") {
+        return FinishReason::Length;
+    }
+    if tools.is_empty() {
+        FinishReason::Stop
+    } else {
+        FinishReason::ToolCalls
+    }
 }
 
 /// 非流式兜底：单次请求，整段内容合成一个 chunk。
@@ -690,14 +713,14 @@ async fn single_shot(
     if let Some(Ok(last)) = chunks.last_mut() {
         last.usage = usage;
     }
-    // 终结分片：显式结束原因（有工具调用 → ToolCalls，否则 Stop）
+    // 终结分片：显式结束原因（`length` = 截断；其余按有无工具调用兜底）
+    let provider_finish = completion
+        .choices
+        .iter()
+        .find_map(|choice| choice.finish_reason.as_deref());
     chunks.push(Ok(StreamChunk {
         delta: ChunkDelta::Finish {
-            reason: if tool_calls.is_empty() {
-                FinishReason::Stop
-            } else {
-                FinishReason::ToolCalls
-            },
+            reason: finish_reason_from(provider_finish, &tool_calls),
         },
         usage: None,
     }));

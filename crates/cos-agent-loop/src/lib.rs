@@ -500,6 +500,13 @@ impl AgentCore {
             usage,
         });
 
+        // 截断必须让调用方看见：正文可能不完整（推理 token 也算预算）。
+        if finish_reason == Some(FinishReason::Length) {
+            return Err(LoopError::Other(
+                "输出被 max_tokens 截断（finish_reason=length）".to_string(),
+            ));
+        }
+
         if tool_calls.is_empty() && finish_reason != Some(FinishReason::ToolCalls) {
             return Ok(Some(TurnEndReason::Completed));
         }

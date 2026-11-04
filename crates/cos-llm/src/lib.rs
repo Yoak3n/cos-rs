@@ -365,6 +365,8 @@ pub enum FinishReason {
     Stop,
     /// 请求执行工具（流内已产出 ToolUse 块）。
     ToolCalls,
+    /// 输出达到 `max_tokens` 上限被截断（正文可能不完整；推理 token 也算在预算里）。
+    Length,
 }
 
 /// 流式增量块。
