@@ -121,7 +121,7 @@ pub struct OpenAiAdapter {
 /// SSE `data:` 行结构（OpenAI chat.completion.chunk）。
 #[derive(Deserialize)]
 struct SseChunk {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     choices: Vec<SseChoice>,
     #[serde(default)]
     usage: Option<SseUsage>,
@@ -130,7 +130,7 @@ struct SseChunk {
 /// SSE choices 元素。
 #[derive(Deserialize)]
 struct SseChoice {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     delta: SseDelta,
     /// OpenAI 的结束原因（`stop` / `tool_calls` / `length`）；流尾块才带。
     #[serde(default)]
@@ -146,7 +146,7 @@ struct SseDelta {
     #[serde(default)]
     reasoning_content: Option<String>,
     /// 工具调用增量（流式按 `index` 分片到达，`arguments` 为片段）。
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     tool_calls: Vec<SseToolCall>,
 }
 
@@ -157,7 +157,7 @@ struct SseToolCall {
     index: Option<usize>,
     #[serde(default)]
     id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     function: SseToolFunction,
 }
 
@@ -173,7 +173,7 @@ struct SseToolFunction {
 /// 非流式响应（OpenAI chat.completion）。
 #[derive(Deserialize)]
 struct Completion {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     choices: Vec<CompletionChoice>,
     #[serde(default)]
     usage: Option<SseUsage>,
@@ -195,8 +195,23 @@ struct CompletionMessage {
     content: Option<String>,
     #[serde(default)]
     reasoning_content: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     tool_calls: Vec<SseToolCall>,
+}
+
+/// `null` 与「字段缺省」同义。
+///
+/// opencode zen/go 的流式分片把每个字段都显式发出来，包括
+/// `"tool_calls": null`；`#[serde(default)]` 只兜「字段缺失」，接不住显式的
+/// `null`——整片会解析失败，`stream_once` 又按「keepalive 行」把它静默跳过。
+/// 结果就是正文 / 思考分片被整段丢弃（2026-11 线② 实测：35 步只活下工具调用，
+/// 最后一轮纯正文的 6903 tokens 全部为空，界面显示「没有正文」）。
+fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + serde::Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 /// usage 块（流式与非流式共用）。
@@ -766,5 +781,53 @@ mod tests {
         assert_eq!(headers.get("x-opencode-session").unwrap(), "sess-1");
         assert_eq!(headers.get("user-agent").unwrap(), "test-agent/1.0");
         assert!(headers.get("authorization").is_some(), "鉴权头仍在");
+    }
+
+    /// 网关在每片 delta 里显式发 `"tool_calls": null`；不能因此丢掉整片
+    /// （正文 / 思考都在同一片里，丢掉就是整轮没有正文）。
+    #[test]
+    fn null_tool_calls_in_stream_delta_keep_reasoning() {
+        let line = r#"{"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"","reasoning_content":"让我先看材料。","tool_calls":null}}],"usage":null}"#;
+        let chunk: SseChunk =
+            serde_json::from_str(line).expect("null tool_calls 不应让整片解析失败");
+        assert_eq!(chunk.choices.len(), 1);
+        assert_eq!(
+            chunk.choices[0].delta.reasoning_content.as_deref(),
+            Some("让我先看材料。")
+        );
+        assert!(chunk.choices[0].delta.tool_calls.is_empty());
+    }
+
+    /// 同类字段（choices / delta / function）显式发 null 时同样不能炸。
+    #[test]
+    fn null_choices_delta_and_function_are_tolerated() {
+        let chunk: SseChunk = serde_json::from_str(r#"{"choices":null,"usage":null}"#).unwrap();
+        assert!(chunk.choices.is_empty());
+
+        let chunk: SseChunk = serde_json::from_str(r#"{"choices":[{"delta":null}]}"#).unwrap();
+        assert!(chunk.choices[0].delta.tool_calls.is_empty());
+
+        let chunk: SseChunk = serde_json::from_str(
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c","function":null}]}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(chunk.choices[0].delta.tool_calls.len(), 1);
+        assert!(chunk.choices[0].delta.tool_calls[0].function.name.is_none());
+    }
+
+    /// 非流式兜底路径同样要接住 null。
+    #[test]
+    fn null_tool_calls_in_non_stream_message_are_tolerated() {
+        let line = r#"{"choices":[{"message":{"content":"正文","reasoning_content":null,"tool_calls":null},"finish_reason":"stop"}],"usage":null}"#;
+        let completion: Completion = serde_json::from_str(line).unwrap();
+        assert_eq!(
+            completion.choices[0].message.content.as_deref(),
+            Some("正文")
+        );
+        assert!(completion.choices[0].message.tool_calls.is_empty());
+
+        let completion: Completion =
+            serde_json::from_str(r#"{"choices":null,"usage":null}"#).unwrap();
+        assert!(completion.choices.is_empty());
     }
 }
