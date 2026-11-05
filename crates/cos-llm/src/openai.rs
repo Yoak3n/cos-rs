@@ -218,10 +218,14 @@ fn classify_status(status: u16, text: &str) -> LlmError {
 impl OpenAiAdapter {
     /// 由配置构造（默认请求头：Bearer + JSON）。
     pub fn new(config: OpenAiConfig) -> Self {
-        Self {
-            config,
-            client: reqwest::Client::new(),
-        }
+        // **每个请求新连接**（idle 池上限 0）：实测网关在同一条 keep-alive 连接上
+        // 连续多次长流之后，会只回 usage、不送内容分片（Ariadne 生成线 6 轮
+        // 18 万 output tokens 全部为空）；每次新连接的 curl 重放稳定正常。
+        let client = reqwest::Client::builder()
+            .pool_max_idle_per_host(0)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Self { config, client }
     }
 
     /// 当前模型 id。
