@@ -7,6 +7,8 @@
 //!
 //! LLM 统一管理：Provider crate 经 [`llm_factory!`] 注册工厂（inventory 静态收集），
 //! [`LlmRegistry`] 服务统一装配/按名取用/后备链（[`FallbackAdapter`] 未产出即失败自动切换）。
+//! 请求层韧性由 [`RetryAdapter`] 提供（首片未出且可重试时按 [`RetryPolicy`] 指数退避），
+//! 与后备链可组合，顺序由装配方决定。
 //!
 //! **`adapters` feature**（默认关）：内置协议适配器族——OpenAI 兼容 `chat/completions`
 //! （[`build_openai`]，原 cos-llm-openai crate，P9 并入）、Anthropic Messages
@@ -35,6 +37,9 @@ pub mod anthropic;
 pub mod responses;
 
 #[cfg(feature = "adapters")]
+pub mod retry;
+
+#[cfg(feature = "adapters")]
 pub use openai::{OpenAiAdapter, OpenAiConfig, build_openai};
 
 #[cfg(feature = "adapters")]
@@ -42,6 +47,9 @@ pub use anthropic::{AnthropicAdapter, AnthropicConfig, build_anthropic};
 
 #[cfg(feature = "adapters")]
 pub use responses::{ResponsesAdapter, ResponsesConfig, build_responses};
+
+#[cfg(feature = "adapters")]
+pub use retry::{RetryAdapter, RetryPolicy};
 
 /// 提供商工厂构建函数（配置 → 适配器）。
 pub type LlmFactoryFn = fn(&serde_json::Value) -> Result<Arc<dyn LlmAdapter>, LlmError>;
